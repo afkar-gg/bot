@@ -1,15 +1,17 @@
 {
-  "name": "nodejs",
+  "name": "discord-webhook-proxy",
   "version": "1.0.0",
-  "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "node-fetch": "^2.6.7",
+    "ping-monitor": "^0.8.2"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "dependencies": {
-    "@types/node": "^22.13.11"
-  }
+  "description": ""
 }
