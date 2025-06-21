@@ -4,6 +4,7 @@ const app = express();
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
+const PORT = process.env.PORT || 3000; // Fallback to 3000 if PORT is not defined
 
 app.use(express.json());
 
@@ -61,6 +62,6 @@ app.post("/send", async (req, res) => {
 
 app.get("/", (req, res) => res.send("Webhook proxy is running."));
 
-app.listen(3000, () => {
-  console.log("✅ Webhook proxy running at http://localhost:3000");
+app.listen(PORT, () => {
+  console.log(`✅ Webhook proxy running at http://localhost:${PORT}`);
 });
