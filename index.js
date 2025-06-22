@@ -15,28 +15,25 @@ const PORT = Math.floor(Math.random() * (4000 - 1000 + 1)) + 1000;
 const app = express();
 app.use(express.json());
 
-app.get("/", (_, res) => res.send("🤖 Bot Proxy is running."));
+app.get("/", (_, res) => res.send("🤖 Free Cloudflare Tunnel Proxy is online."));
 
 app.post("/send", async (req, res) => {
   try {
-    // 1. Fetch and delete last message
     const last = await fetch(
       `https://discord.com/api/v10/channels/${CHANNEL_ID}/messages?limit=1`,
       { headers: { Authorization: `Bot ${BOT_TOKEN}` } }
     ).then(r => r.json());
 
-    if (Array.isArray(last) && last.length > 0) {
-      const msgId = last[0].id;
-      await fetch(`https://discord.com/api/v10/channels/${CHANNEL_ID}/messages/${msgId}`, {
+    if (Array.isArray(last) && last[0]) {
+      await fetch(`https://discord.com/api/v10/channels/${CHANNEL_ID}/messages/${last[0].id}`, {
         method: "DELETE",
         headers: { Authorization: `Bot ${BOT_TOKEN}` }
       });
-      console.log("🧹 Deleted message:", msgId);
+      console.log("🧹 Deleted message:", last[0].id);
     }
 
-    // 2. Send new message
-    const msg = req.body.content || "No content provided.";
-    const response = await fetch(
+    const msg = req.body.content || "No content.";
+    const res2 = await fetch(
       `https://discord.com/api/v10/channels/${CHANNEL_ID}/messages`,
       {
         method: "POST",
@@ -47,39 +44,38 @@ app.post("/send", async (req, res) => {
         body: JSON.stringify({ content: msg })
       }
     );
+    const json = await res2.json();
+    console.log("📤 Sent:", json.id);
+    res.json({ ok: true, messageId: json.id });
 
-    const json = await response.json();
-    console.log("📤 Sent message:", json.id);
-    res.json({ status: "ok", messageId: json.id });
   } catch (err) {
     console.error("❌ Error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Start local server
 app.listen(PORT, () => {
-  console.log(`🟢 Local server running on port ${PORT}`);
-  startNgrok(PORT);
+  console.log(`🟢 Server running on port ${PORT}`);
+  startCloudflareTunnel();
 });
 
-// Ngrok spawn (Termux-compatible)
-function startNgrok(port) {
-  const ng = spawn("ngrok", ["http", port]);
+// Start free Cloudflare tunnel (random subdomain)
+function startCloudflareTunnel() {
+  const tunnel = spawn("cloudflared", ["tunnel", "--url", `http://localhost:${PORT}`]);
 
-  ng.stdout.on("data", (data) => {
+  tunnel.stdout.on("data", data => {
     const output = data.toString();
-    const match = output.match(/https:\/\/[a-z0-9\-]+\.ngrok\.io/);
+    const match = output.match(/https:\/\/.*?\.trycloudflare\.com/);
     if (match) {
-      console.log("🌍 Ngrok public URL:", match[0] + "/send");
+      console.log("🌍 Tunnel URL:", match[0] + "/send");
     }
   });
 
-  ng.stderr.on("data", (data) => {
-    console.error(`ngrok error: ${data}`);
+  tunnel.stderr.on("data", err => {
+    console.error("Tunnel error:", err.toString());
   });
 
-  ng.on("close", (code) => {
-    console.log(`ngrok closed with code ${code}`);
+  tunnel.on("close", code => {
+    console.log(`💥 Tunnel closed with code ${code}`);
   });
 }
