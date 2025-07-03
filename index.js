@@ -15,6 +15,41 @@ const PORT = Math.floor(Math.random() * (4000 - 1000 + 1)) + 1000;
 const app = express();
 app.use(express.json());
 
+// === /send-job — Send Job ID as embed
+app.post("/send-job", async (req, res) => {
+	const { username, jobId, placeId, join_url } = req.body;
+
+	if (!username || !jobId || !placeId || !join_url) {
+		return res.status(400).json({ error: "Missing job info." });
+	}
+
+	const embed = {
+		embeds: [{
+			title: "📡 Roblox Job ID",
+			color: 0x00ffff,
+			description: `**Username:** \`${username}\`\n🔗 [Join Server](${join_url})`
+		}]
+	};
+
+	try {
+		const response = await fetch(`https://discord.com/api/v10/channels/${FALLBACK_CHANNEL_ID}/messages`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: `Bot ${BOT_TOKEN}`
+			},
+			body: JSON.stringify(embed)
+		});
+
+		const json = await response.json();
+		console.log("✅ Job ID sent:", json.id);
+		res.json({ ok: true });
+	} catch (err) {
+		console.error("❌ Failed to send job ID:", err.message);
+		res.status(500).json({ error: err.message });
+	}
+});
+
 // === Store per-user sessions and check-in status
 const sessions = new Map(); // username → { messageId, channelId, startTime, duration, warned }
 const lastSeen = new Map(); // username → { time, channelId, warned }
