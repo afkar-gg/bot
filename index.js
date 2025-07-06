@@ -254,7 +254,7 @@ app.get("/status", (req, res) => {
           r.innerHTML = \`
             🧍‍♂️ <b>\${user}</b> is <span style="color:lime;font-weight:bold;">ONLINE</span><br/>
             🕒 Time left: \${mins}m \${secs}s<br/>
-            👁️ Last seen: \${lastSeenAgo} min ago
+            👁️ Last Checked: \${lastSeenAgo} min ago (0 = <60 Sec)
           \`;
         }
       }
