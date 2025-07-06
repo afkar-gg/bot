@@ -7,266 +7,364 @@ const BOT_TOKEN = config.BOT_TOKEN;
 const FALLBACK_CHANNEL_ID = config.CHANNEL_ID;
 
 if (!BOT_TOKEN) {
-	console.error("❌ BOT_TOKEN is missing.");
-	process.exit(1);
+  console.error("❌ BOT_TOKEN is missing.");
+  process.exit(1);
 }
 
-const PORT = Math.floor(Math.random() * (4000 - 1000 + 1)) + 1000;
+const PORT = Math.floor(Math.random() * 3001) + 1000;
 const app = express();
 app.use(express.json());
 
-// === /send-job — Send Job ID as embed
-app.post("/send-job", async (req, res) => {
-	const { username, jobId, placeId, join_url } = req.body;
+const sessions = new Map();
+const lastSeen = new Map();
 
-	if (!username || !jobId || !placeId || !join_url) {
-		return res.status(400).json({ error: "Missing job info." });
-	}
-
-	const embed = {
-		embeds: [{
-			title: "📡 Roblox Job ID",
-			color: 0x00ffff,
-			description: `**Username:** \`${username}\`\n🔗 [Join Server](${join_url})`
-		}]
-	};
-
-	try {
-		const response = await fetch(`https://discord.com/api/v10/channels/${FALLBACK_CHANNEL_ID}/messages`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bot ${BOT_TOKEN}`
-			},
-			body: JSON.stringify(embed)
-		});
-
-		const json = await response.json();
-		console.log("✅ Job ID sent:", json.id);
-		res.json({ ok: true });
-	} catch (err) {
-		console.error("❌ Failed to send job ID:", err.message);
-		res.status(500).json({ error: err.message });
-	}
-});
-
-// === Store per-user sessions and check-in status
-const sessions = new Map(); // username → { messageId, channelId, startTime, duration, warned }
-const lastSeen = new Map(); // username → { time, channelId, warned }
-
-app.get("/", (_, res) => res.send("🤖 Proxy is alive."));
-
-// === /send — JOKI STARTED ===
+// === /send ===
 app.post("/send", async (req, res) => {
-	const {
-		username = "Unknown",
-		jam_selesai_joki = 1,
-		no_order = "OD000000000000",
-		nama_store = "Unknown Store",
-		channel_id
-	} = req.body;
+  const {
+    username = "Unknown",
+    jam_selesai_joki = 1,
+    no_order = "OD000000000000",
+    nama_store = "AfkarStore"
+  } = req.body;
 
-	const finalChannelId = channel_id || FALLBACK_CHANNEL_ID;
-	const orderCode = no_order.replace("OD000000", "") || "000000000000";
-	const link = `https://tokoku.itemku.com/riwayat-pesanan/rincian/${orderCode}`;
-  
+  const channel = FALLBACK_CHANNEL_ID;
+  const now = Math.floor(Date.now() / 1000);
+  const end = now + jam_selesai_joki * 3600;
+  const orderIdClean = no_order.replace("OD000000", "");
+
   const embed = {
-  	embeds: [{
-	  	title: "🎮 JOKI STARTED",
-	  	color: 65280,
-	  	description: `**Username:** ${username}
-  **Order ID:** ${no_order}
-  🔗 [View Order History](${link})
-   
-  **Start:** <t:${Math.floor(Date.now() / 1000)}:F>
-  **End:** <t:${Math.floor(Date.now() / 1000) + (Number(jam_selesai_joki) * 3600)}:F>
-  
-  - ${nama_store} ❤️`,
-      footer: {
-			  text: "Joki Service Bot • Powered by Afkar",
-		  	icon_url: "https://cdn-icons-png.flaticon.com/512/4712/4712109.png" // optional
-	  	}
-	  }]
+    embeds: [{
+      title: "🎮 **JOKI STARTED**",
+      color: 0x2ecc71,
+      description: [
+        `**Username:** ${username}`,
+        `**Order ID:** ${no_order}`,
+        `[🔗 View Order History](https://tokoku.itemku.com/riwayat-pesanan/rincian/${orderIdClean})`,
+        "",
+        `**Start:** <t:${now}:f>`,
+        `**End:** <t:${end}:f>`
+      ].join("\n"),
+      footer: { text: `- ${nama_store} ❤️` }
+    }]
   };
-  
-	try {
-		const response = await fetch(`https://discord.com/api/v10/channels/${finalChannelId}/messages`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bot ${BOT_TOKEN}`
-			},
-			body: JSON.stringify(embed)
-		});
 
-		const json = await response.json();
-		console.log("✅ Joki Started:", json.id);
+  try {
+    const resp = await fetch(`https://discord.com/api/v10/channels/${channel}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify(embed)
+    });
+    const data = await resp.json();
 
-		sessions.set(username, {
-			messageId: json.id,
-			channelId: finalChannelId,
-			startTime: Date.now(),
-			duration: jam_selesai_joki * 3600,
-			warned: false
-		});
+    if (!resp.ok || !data.id) {
+      return res.status(500).json({ error: "Discord message failed" });
+    }
 
-		res.json({ ok: true, id: json.id });
-	} catch (err) {
-		console.error("❌ Failed to send embed:", err.message);
-		res.status(500).json({ error: err.message });
-	}
+    sessions.set(username, {
+      messageId: data.id,
+      channel,
+      endTime: end * 1000,
+      warned: false
+    });
+
+    lastSeen.set(username, Date.now());
+    res.json({ ok: true, id: data.id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// === /check — only edit your own message
+// === /check ===
 app.post("/check", async (req, res) => {
-	const { username = "Unknown" } = req.body;
-	const session = sessions.get(username);
-	if (!session) {
-		console.warn(`⚠️ No session found for ${username}`);
-		return res.status(404).json({ error: "No active session for this user." });
-	}
+  const { username } = req.body;
+  const s = sessions.get(username);
+  if (!s) return res.status(404).json({ error: "No session" });
 
-	const content = `🟢 Online Checked — Username: ${username}\nLast Checked: <t:${Math.floor(Date.now() / 1000)}:R>`;
+  lastSeen.set(username, Date.now());
+  const nowUnix = Math.floor(Date.now() / 1000);
 
-	lastSeen.set(username, {
-		time: Date.now(),
-		channel_id: session.channelId,
-		warned: false
-	});
-
-	try {
-		await fetch(`https://discord.com/api/v10/channels/${session.channelId}/messages/${session.messageId}`, {
-			method: "PATCH",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bot ${BOT_TOKEN}`
-			},
-			body: JSON.stringify({ content })
-		});
-		console.log(`✏️ Edited check-in for ${username}`);
-		res.json({ edited: true });
-	} catch (err) {
-		console.error("❌ Failed to edit message:", err.message);
-		res.status(500).json({ error: err.message });
-	}
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${s.channel}/messages/${s.messageId}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify({
+        content: `🟢 **Online Checked** — **Username:** ${username}\nLast Checked: <t:${nowUnix}:R>`,
+        allowed_mentions: { parse: [] }
+      })
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// === /complete — JOKI DONE
+// === /complete ===
 app.post("/complete", async (req, res) => {
-	const {
-		username = "Unknown",
-		no_order = "OD000000000000",
-		nama_store = "Unknown Store"
-	} = req.body;
+  const { username, no_order = "OD000000000000", nama_store = "AfkarStore" } = req.body;
+  const s = sessions.get(username);
+  if (!s) return res.status(404).json({ error: "No session" });
 
-	const session = sessions.get(username);
-	const channelId = session?.channelId || FALLBACK_CHANNEL_ID;
-	const orderCode = no_order.replace("OD", "") || "000000000000";
-	const link = `https://tokoku.itemku.com/riwayat-pesanan/rincian/${orderCode}`;
+  const now = Math.floor(Date.now() / 1000);
+  const orderIdClean = no_order.replace("OD000000", "");
 
-	const embed = {
-		embeds: [{
-			title: "✅ JOKI COMPLETED",
-			color: 16776960,
-			description: `**Username:** ${username}
-**Order ID:** ${no_order}
-🔗 [View Order History](${link})
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify({
+        embeds: [{
+          title: "✅ **JOKI COMPLETED**",
+          color: 0x2ecc71,
+          description: [
+            `**Username:** ${username}`,
+            `**Order ID:** ${no_order}`,
+            `[🔗 View Order History](https://tokoku.itemku.com/riwayat-pesanan/rincian/${orderIdClean})`,
+            "",
+            `⏰ Completed at: <t:${now}:f>`,
+            `❤️ Thank you for using ${nama_store} ❤️`
+          ].join("\n")
+        }]
+      })
+    });
 
-⏱️ Completed at: <t:${Math.floor(Date.now() / 1000)}:F>
-❤️ Thank you for using ${nama_store} ❤️`
-		}]
-	};
+    sessions.delete(username);
+    lastSeen.delete(username);
 
-	try {
-		const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bot ${BOT_TOKEN}`
-			},
-			body: JSON.stringify(embed)
-		});
-
-		const json = await response.json();
-		console.log("🏁 Completion sent:", json.id);
-		res.json({ ok: true, id: json.id });
-	} catch (err) {
-		console.error("❌ Failed to send completion:", err.message);
-		res.status(500).json({ error: err.message });
-	}
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// === Bot status ONLINE
-async function setBotPresence() {
-	try {
-		await fetch("https://discord.com/api/v10/users/@me/settings", {
-			method: "PATCH",
-			headers: {
-				Authorization: `Bot ${BOT_TOKEN}`,
-				"Content-Type": "application/json"
-			},
-			body: JSON.stringify({ status: "online" })
-		});
-		console.log("✅ Bot status set to online");
-	} catch (err) {
-		console.error("❌ Failed to set presence:", err.message);
-	}
-}
+// === /cancel ===
+app.post("/cancel", async (req, res) => {
+  const { username } = req.body;
+  const s = sessions.get(username);
+  if (!s) return res.status(404).json({ error: "No session" });
 
-// === Offline Watchdog — Warn if inactive >10 min
-setInterval(async () => {
-	const now = Date.now();
-	for (const [username, session] of sessions.entries()) {
-		const last = lastSeen.get(username);
-		const elapsed = last ? (now - last.time) / 1000 : Infinity;
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify({ content: `❌ ${username}'s session was cancelled.` })
+    });
+    sessions.delete(username);
+    lastSeen.delete(username);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-		if (elapsed > 600 && !session.warned) {
-			try {
-				await fetch(`https://discord.com/api/v10/channels/${session.channelId}/messages`, {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						Authorization: `Bot ${BOT_TOKEN}`
-					},
-					body: JSON.stringify({
-						content: `🔴 @everyone — **${username} is OFFLINE.** No heartbeat for 10 minutes.`
-					})
-				});
-				console.log(`⚠️ Sent offline warning for ${username}`);
-				session.warned = true;
-			} catch (err) {
-				console.error("❌ Failed to send warning:", err.message);
-			}
-		} else if (elapsed <= 600 && session.warned) {
-			session.warned = false;
-		}
-	}
-}, 60 * 1000);
+// === /send-job ===
+app.post("/send-job", async (req, res) => {
+  const { jobId = "Unknown", username = "User", join_url = "", placeId = "N/A" } = req.body;
+  const s = sessions.get(username);
+  if (!s) return res.status(404).json({ error: "No session" });
 
-// === Launch tunnel + server
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify({
+        embeds: [{
+          title: `🧩 Job ID for ${username}`,
+          description: `**Place ID:** \`${placeId}\`\n**Job ID:** \`${jobId}\``,
+          fields: [{
+            name: "Join Link",
+            value: `[Click to Join Game](${join_url})`
+          }],
+          color: 0x3498db
+        }]
+      })
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === /resume ===
+app.post("/resume", (req, res) => {
+  const { username } = req.body;
+  const s = sessions.get(username);
+  if (!s) return res.status(404).json({ error: "No active session" });
+
+  res.json({
+    ok: true,
+    endTime: s.endTime,
+    messageId: s.messageId,
+    channel: s.channel
+  });
+});
+
+// === /status === (HTML UI + API)
+app.get("/status", (req, res) => {
+  const html = `
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <title>Joki Status</title>
+    <style>
+      body { font-family: sans-serif; background: #111; color: #fff; padding: 40px; text-align: center; }
+      input, button { padding: 10px; font-size: 16px; margin: 5px; }
+      .result { margin-top: 20px; font-size: 18px; }
+    </style>
+  </head>
+  <body>
+    <h1>🔎 Check Joki Status</h1>
+    <input id="userInput" type="text" placeholder="Enter username" />
+    <button onclick="checkStatus()">Check</button>
+    <div id="result" class="result"></div>
+
+    <script>
+      async function checkStatus() {
+        const user = document.getElementById("userInput").value.trim();
+        if (!user) return;
+
+        const res = await fetch("/status/" + user);
+        const data = await res.json();
+        const r = document.getElementById("result");
+
+        if (data.error) {
+          r.innerText = "❌ " + data.error;
+        } else if (data.lastSeen === "offline") {
+          r.innerHTML = \`🧍‍♂️ <b>\${user}</b> is <span style="color:red;font-weight:bold;">OFFLINE</span><br/>No heartbeat for 10+ minutes.\`;
+        } else {
+          const left = Math.floor((data.endTime - Date.now()) / 1000);
+          const mins = Math.floor(left / 60);
+          const secs = left % 60;
+          const lastSeenAgo = Math.floor((Date.now() - data.lastSeen) / 60000);
+
+          r.innerHTML = \`
+            🧍‍♂️ <b>\${user}</b> is <span style="color:lime;font-weight:bold;">ONLINE</span><br/>
+            🕒 Time left: \${mins}m \${secs}s<br/>
+            👁️ Last seen: \${lastSeenAgo} min ago
+          \`;
+        }
+      }
+    </script>
+  </body>
+  </html>
+  `;
+  res.send(html);
+});
+
+app.get("/status/:username", (req, res) => {
+  const username = req.params.username;
+  const s = sessions.get(username);
+  const seen = lastSeen.get(username);
+
+  if (!s) {
+    return res.status(404).json({ error: "No session found for " + username });
+  }
+
+  const now = Date.now();
+  const isOffline = !seen || (now - seen > 10 * 60 * 1000);
+
+  res.json({
+    username,
+    endTime: s.endTime,
+    status: isOffline ? "offline" : "online",
+    lastSeen: isOffline ? "offline" : seen
+  });
+});
+
+// === /join ===
+app.get("/join", (req, res) => {
+  const placeId = req.query.place;
+  const jobId = req.query.job;
+
+  if (!placeId || !jobId) {
+    return res.status(400).send("Missing placeId or jobId");
+  }
+
+  const robloxUri = `roblox://experiences/start?placeId=${placeId}&gameId=${jobId}`;
+  const fallbackHTML = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Join Roblox Game</title>
+      <style>
+        body { font-family: sans-serif; background: #111; color: #fff; padding: 40px; text-align: center; }
+        a { color: #88f; font-size: 18px; text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>🔗 Join Roblox Session</h1>
+      <p>If you are not redirected, click the link below to open Roblox manually:</p>
+      <a href="${robloxUri}">Click here to join the game</a>
+    </body>
+    </html>
+  `;
+  res.set("Content-Type", "text/html");
+  res.send(fallbackHTML);
+});
+
+// === Watchdog ===
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [username, s] of sessions.entries()) {
+    const last = lastSeen.get(username) || 0;
+
+    // Notify end
+    if (now > s.endTime && !s.warned) {
+      fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bot ${BOT_TOKEN}`
+        },
+        body: JSON.stringify({ content: `⏳ ${username}'s joki ended.` })
+      }).then(() => {
+        s.warned = true;
+      });
+    }
+
+    // Detect offline
+    if (!s.offline && now - last >= 10 * 60 * 1000) {
+      fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bot ${BOT_TOKEN}`
+        },
+        body: JSON.stringify({
+          content: `🔴 @everyone — **${username} is OFFLINE.** No heartbeat for 10 minutes.`
+        })
+      }).then(() => {
+        s.offline = true;
+      });
+    }
+
+    // Auto clean
+    if (now > s.endTime + 300000) {
+      sessions.delete(username);
+      lastSeen.delete(username);
+    }
+  }
+}, 60000);
+
+// === Start Server + Tunnel ===
 app.listen(PORT, () => {
-	console.log(`🟢 Proxy running on port ${PORT}`);
-	startTunnel();
-	setTimeout(setBotPresence, 1000);
+  console.log(`✅ Proxy live on port ${PORT}`);
+  spawn("cloudflared", ["tunnel", "--url", `http://localhost:${PORT}`], {
+    stdio: "inherit"
+  });
 });
-
-function startTunnel() {
-	const tunnel = spawn("cloudflared", ["tunnel", "--url", `http://localhost:${PORT}`]);
-
-	tunnel.stdout.on("data", data => {
-		const out = data.toString();
-		const match = out.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-		if (match) {
-			console.log("🌍 Tunnel URL:", match[0]);
-			console.log("➡️ Ready: /send /check /complete");
-		}
-	});
-
-	tunnel.stderr.on("data", err => {
-		console.error("Tunnel error:", err.toString());
-	});
-
-	tunnel.on("close", code => {
-		console.log("Tunnel closed:", code);
-	});
-}
