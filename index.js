@@ -364,7 +364,24 @@ setInterval(() => {
 // === Start Server + Tunnel ===
 app.listen(PORT, () => {
   console.log(`✅ Proxy live on port ${PORT}`);
-  spawn("cloudflared", ["tunnel", "--url", `http://localhost:${PORT}`], {
-    stdio: "inherit"
+
+  const tunnel = spawn("cloudflared", [
+    "tunnel",
+    "--url", `http://localhost:${PORT}`,
+    "--loglevel", "error"
+  ]);
+
+  tunnel.stdout.on("data", (data) => {
+    const output = data.toString();
+    if (output.includes("trycloudflare.com")) {
+      console.log(`🌐 Cloudflare URL: ${output.trim()}`);
+    }
+  });
+
+  tunnel.stderr.on("data", (err) => {
+    const msg = err.toString();
+    if (!msg.includes("refreshing dns")) {
+      console.error("⚠️ Cloudflared:", msg.trim());
+    }
   });
 });
