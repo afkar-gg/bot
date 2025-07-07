@@ -1,251 +1,387 @@
-const express = require("express"), fetch = require("node-fetch"), { spawn } = require("child_process");
+const express = require("express");
+const fetch = require("node-fetch");
+const { spawn } = require("child_process");
 const config = require("./config.json");
-const BOT_TOKEN = config.BOT_TOKEN, CHANNEL = config.CHANNEL_ID;
-const DASH_PASS = config.DASHBOARD_PASSWORD || "secret";
-if (!BOT_TOKEN) { console.error("Missing BOT_TOKEN"); process.exit(1); }
 
-const PORT = 3000;
+const BOT_TOKEN = config.BOT_TOKEN;
+const FALLBACK_CHANNEL_ID = config.CHANNEL_ID;
+
+if (!BOT_TOKEN) {
+  console.error("❌ BOT_TOKEN is missing.");
+  process.exit(1);
+}
+
+const PORT = Math.floor(Math.random() * 3001) + 1000;
 const app = express();
 app.use(express.json());
-app.use(require("cookie-parser")());
 
-// In-memory job store & sessions
-const pending = new Map(); // username -> job details
 const sessions = new Map();
 const lastSeen = new Map();
 
-// --- Auth Middleware ---
-function requireAuth(req, res, next) {
-  if (req.path.startsWith("/status") || req.path === "/login" || req.path === "/login-submit") return next();
-  if (req.cookies?.dash_auth === DASH_PASS) return next();
-  res.redirect("/login");
-}
-app.use(requireAuth);
+// === /send ===
+app.post("/send", async (req, res) => {
+  const {
+    username = "Unknown",
+    jam_selesai_joki = 1,
+    no_order = "OD000000000000",
+    nama_store = "AfkarStore"
+  } = req.body;
 
-// --- Login Page ---
-app.get("/login", (req, res) => {
-  res.send(`
-    <form method="POST" action="/login-submit">
-      <input name="password" type="password" placeholder="Password" />
-      <button type="submit">Login</button>
-    </form>
-  `);
-});
-app.post("/login-submit", express.urlencoded({ extended: false }), (req, res) => {
-  if (req.body.password === DASH_PASS) {
-    res.cookie("dash_auth", DASH_PASS, { httpOnly: true });
-    return res.redirect("/dashboard");
-  }
-  res.send("Invalid password. <a href='/login'>Retry</a>");
-});
+  const channel = FALLBACK_CHANNEL_ID;
+  const now = Math.floor(Date.now() / 1000);
+  const end = now + jam_selesai_joki * 3600;
+  const orderIdClean = no_order.replace("OD000000", "");
 
-// --- Dashboard ---
-app.get("/dashboard", (req, res) => {
-  const rows = Array.from(pending.values()).map(j =>
-    `<tr>
-      <td>${j.username}</td>
-      <td>${j.no_order}</td>
-      <td>${j.nama_store}</td>
-      <td>${Math.max(0, Math.floor((j.endTime - Date.now())/60000))}m</td>
-      <td>${j.status}</td>
-      <td><button onclick="fetch('/cancel/${j.username}').then(()=>location.reload())">Cancel</button></td>
-    </tr>`
-  ).join("");
-
-  res.send(`
-    <h1>Dashboard</h1>
-    <form id="jobForm">
-      <input name="username" placeholder="Username"/><br/>
-      <input name="no_order" placeholder="Order ID"/><br/>
-      <input name="nama_store" placeholder="Store"/><br/>
-      <input name="jam_selesai_joki" placeholder="Hours"/><br/>
-      <button type="submit">Start Job</button>
-    </form>
-    <h2>Active Jobs</h2>
-    <table border="1">
-      <tr><th>User</th><th>Order</th><th>Store</th><th>Time Left</th><th>Status</th><th>Action</th></tr>
-      ${rows}
-    </table>
-    <script>
-      document.getElementById("jobForm").onsubmit = async e => {
-        e.preventDefault();
-        const f = new FormData(e.target);
-        await fetch("/start-job", { method:"POST", body:JSON.stringify(Object.fromEntries(f)), headers:{"Content-Type":"application/json"} });
-        location.reload();
-      };
-    </script>
-  `);
-});
-
-// --- Job Control ---
-app.post("/start-job", (req, res) => {
-  const { username, no_order, nama_store, jam_selesai_joki } = req.body;
-  const endTime = Date.now() + (+jam_selesai_joki * 3600000);
-  pending.set(username, { username, no_order, nama_store, endTime, status: "waiting" });
-  res.json({ ok: true });
-});
-
-app.get("/cancel/:username", (req, res) => {
-  const u = req.params.username;
-  pending.delete(u);
-  sessions.get(u) && sessions.delete(u);
-  res.redirect("/dashboard");
-});
-
-// --- Roblox Endpoints ---
-app.post("/track", (req, res) => {
-  const { username } = req.body;
-  if (!pending.has(username)) return res.status(404).json({ error: "No matching job" });
-
-  const job = pending.get(username);
-  pending.delete(username);
-
-  const startTime = Date.now();
-  const s = { ...job, startTime, messageId: null, channel: CHANNEL, warned: false, offline: false, endTime: job.endTime };
-  sessions.set(username, s);
-  lastSeen.set(username, Date.now());
-
-  const now = Math.floor(startTime/1000), end = Math.floor(job.endTime/1000);
-  const clean = job.no_order.replace(/^OD000000/, "");
   const embed = {
     embeds: [{
       title: "🎮 **JOKI STARTED**",
-      description:
-        `**Username:** ${username}\n` +
-        `**Order ID:** ${job.no_order}\n` +
-        `[🔗 View Order](`+
-          `https://tokoku.itemku.com/riwayat-pesanan/rincian/${clean})\n\n` +
-        `**Start:** <t:${now}:f>\n**End:** <t:${end}:f>`,
-      footer: { text: `- ${job.nama_store}` }
+      color: 0x2ecc71,
+      description: [
+        `**Username:** ${username}`,
+        `**Order ID:** ${no_order}`,
+        `[🔗 View Order History](https://tokoku.itemku.com/riwayat-pesanan/rincian/${orderIdClean})`,
+        "",
+        `**Start:** <t:${now}:f>`,
+        `**End:** <t:${end}:f>`
+      ].join("\n"),
+      footer: { text: `- ${nama_store} ❤️` }
     }]
   };
 
-  fetch(`https://discord.com/api/v10/channels/${CHANNEL}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bot ${BOT_TOKEN}` },
-    body: JSON.stringify(embed)
-  }).then(r => r.json())
-    .then(data => { s.messageId = data.id; })
-    .catch(console.error);
+  try {
+    const resp = await fetch(`https://discord.com/api/v10/channels/${channel}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify(embed)
+    });
+    const data = await resp.json();
 
-  res.json({ ok: true, endTime: s.endTime });
+    if (!resp.ok || !data.id) {
+      return res.status(500).json({ error: "Discord message failed" });
+    }
+
+    sessions.set(username, {
+      messageId: data.id,
+      channel,
+      endTime: end * 1000,
+      warned: false
+    });
+
+    lastSeen.set(username, Date.now());
+    res.json({ ok: true, id: data.id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-app.post("/check", (req, res) => {
+// === /check ===
+app.post("/check", async (req, res) => {
   const { username } = req.body;
   const s = sessions.get(username);
   if (!s) return res.status(404).json({ error: "No session" });
+
   lastSeen.set(username, Date.now());
-  fetch(`https://discord.com/api/v10/channels/${s.channel}/messages/${s.messageId}`, {
-    method: "PATCH",
-    headers: { "Content-Type":"application/json", Authorization:`Bot ${BOT_TOKEN}` },
-    body: JSON.stringify({ content: `🟢 Online — Last Checked: <t:${Math.floor(Date.now()/1000)}:R>` })
-  }).catch(console.error);
-  res.json({ ok: true });
+  const nowUnix = Math.floor(Date.now() / 1000);
+
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${s.channel}/messages/${s.messageId}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify({
+        content: `🟢 **Online Checked** — **Username:** ${username}\nLast Checked: <t:${nowUnix}:R>`,
+        allowed_mentions: { parse: [] }
+      })
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-app.post("/complete", (req, res) => {
+// === /complete ===
+app.post("/complete", async (req, res) => {
+  const { username, no_order = "OD000000000000", nama_store = "AfkarStore" } = req.body;
+  const s = sessions.get(username);
+  if (!s) return res.status(404).json({ error: "No session" });
+
+  const now = Math.floor(Date.now() / 1000);
+  const orderIdClean = no_order.replace("OD000000", "");
+
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify({
+        embeds: [{
+          title: "✅ **JOKI COMPLETED**",
+          color: 0x2ecc71,
+          description: [
+            `**Username:** ${username}`,
+            `**Order ID:** ${no_order}`,
+            `[🔗 View Order History](https://tokoku.itemku.com/riwayat-pesanan/rincian/${orderIdClean})`,
+            "",
+            `⏰ Completed at: <t:${now}:f>`,
+            `❤️ Thank you for using ${nama_store} ❤️`
+          ].join("\n")
+        }]
+      })
+    });
+
+    sessions.delete(username);
+    lastSeen.delete(username);
+
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === /cancel ===
+app.post("/cancel", async (req, res) => {
   const { username } = req.body;
   const s = sessions.get(username);
   if (!s) return res.status(404).json({ error: "No session" });
 
-  const now = Math.floor(Date.now()/1000);
-  const clean = s.no_order.replace(/^OD000000/, "");
-  const embed = {
-    embeds: [{
-      title: "✅ **JOKI COMPLETED**",
-      description:
-        `**Username:** ${username}\n` +
-        `**Order ID:** ${s.no_order}\n` +
-        `[🔗 View Order](`+
-          `https://tokoku.itemku.com/riwayat-pesanan/rincian/${clean})\n\n` +
-        `⏰ Completed at: <t:${now}:f>`,
-      footer: { text: `- ${s.nama_store}` }
-    }]
-  };
-
-  fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
-    method: "POST",
-    headers: { "Content-Type":"application/json", Authorization:`Bot ${BOT_TOKEN}` },
-    body: JSON.stringify(embed)
-  }).catch(console.error);
-
-  sessions.delete(username);
-  lastSeen.delete(username);
-  res.json({ ok: true });
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify({ content: `❌ ${username}'s session was cancelled.` })
+    });
+    sessions.delete(username);
+    lastSeen.delete(username);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-app.post("/send-job", (req, res) => {
-  const { username, placeId, jobId, join_url } = req.body;
+// === /send-job ===
+app.post("/send-job", async (req, res) => {
+  const { jobId = "Unknown", username = "User", join_url = "", placeId = "N/A" } = req.body;
   const s = sessions.get(username);
-  if (!s) return res.status(404).json({ error:"No session" });
+  if (!s) return res.status(404).json({ error: "No session" });
 
-  const embed = {
-    embeds: [{
-      title: `🧩 Job ID for ${username}`,
-      description: `**Place ID:** \`${placeId}\`\n**Job ID:** \`${jobId}\``,
-      color: 0x3498db,
-      fields: [{ name: "Join Link", value: `[Click to Join](${join_url})` }]
-    }]
-  };
-  fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
-    method: "POST",
-    headers: { "Content-Type":"application/json", Authorization:`Bot ${BOT_TOKEN}` },
-    body: JSON.stringify(embed)
-  }).catch(console.error);
-
-  res.json({ ok: true });
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bot ${BOT_TOKEN}`
+      },
+      body: JSON.stringify({
+        embeds: [{
+          title: `🧩 Job ID for ${username}`,
+          description: `**Place ID:** \`${placeId}\`\n**Job ID:** \`${jobId}\``,
+          fields: [{
+            name: "Join Link",
+            value: `[Click to Join Game](${join_url})`
+          }],
+          color: 0x3498db
+        }]
+      })
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// Public status check
-app.get("/status/:username", (req, res) => {
-  const u = req.params.username;
-  const s = sessions.get(u), seen = lastSeen.get(u);
-  if (!s) return res.status(404).json({ error:`No session for ${u}` });
+// === /resume ===
+app.post("/resume", (req, res) => {
+  const { username } = req.body;
+  const s = sessions.get(username);
+  if (!s) return res.status(404).json({ error: "No active session" });
 
-  const now = Date.now();
-  const ago = seen && (now - seen < 300000) ? seen : null;
   res.json({
-    username: u,
+    ok: true,
     endTime: s.endTime,
-    lastSeen: ago || "offline"
+    messageId: s.messageId,
+    channel: s.channel
   });
 });
 
-// Watchdog
+// === /status === (HTML UI + API)
+app.get("/status", (req, res) => {
+  const html = `
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <title>Joki Status</title>
+    <style>
+      body { font-family: sans-serif; background: #111; color: #fff; padding: 40px; text-align: center; }
+      input, button { padding: 10px; font-size: 16px; margin: 5px; }
+      .result { margin-top: 20px; font-size: 18px; }
+    </style>
+  </head>
+  <body>
+    <h1>🔎 Check Joki Status</h1>
+    <input id="userInput" type="text" placeholder="Enter username" />
+    <button onclick="checkStatus()">Check</button>
+    <div id="result" class="result"></div>
+
+    <script>
+      async function checkStatus() {
+        const user = document.getElementById("userInput").value.trim();
+        if (!user) return;
+
+        const res = await fetch("/status/" + user);
+        const data = await res.json();
+        const r = document.getElementById("result");
+
+        if (data.error) {
+          r.innerText = "❌ " + data.error;
+        } else if (data.lastSeen === "offline") {
+          r.innerHTML = \`🧍‍♂️ <b>\${user}</b> is <span style="color:red;font-weight:bold;">OFFLINE</span><br/>No heartbeat for 10+ minutes.\`;
+        } else {
+          const left = Math.floor((data.endTime - Date.now()) / 1000);
+          const mins = Math.floor(left / 60);
+          const secs = left % 60;
+          const lastSeenAgo = Math.floor((Date.now() - data.lastSeen) / 60000);
+
+          r.innerHTML = \`
+            🧍‍♂️ <b>\${user}</b> is <span style="color:lime;font-weight:bold;">ONLINE</span><br/>
+            🕒 Time left: \${mins}m \${secs}s<br/>
+            👁️ Last Checked: \${lastSeenAgo} min ago (0 = <60 Sec)
+          \`;
+        }
+      }
+    </script>
+  </body>
+  </html>
+  `;
+  res.send(html);
+});
+
+app.get("/status/:username", (req, res) => {
+  const username = req.params.username;
+  const s = sessions.get(username);
+  const seen = lastSeen.get(username);
+
+  if (!s) {
+    return res.status(404).json({ error: "No session found for " + username });
+  }
+
+  const now = Date.now();
+  const isOffline = !seen || (now - seen > 10 * 60 * 1000);
+
+  res.json({
+    username,
+    endTime: s.endTime,
+    status: isOffline ? "offline" : "online",
+    lastSeen: isOffline ? "offline" : seen
+  });
+});
+
+// === /join ===
+app.get("/join", (req, res) => {
+  const placeId = req.query.place;
+  const jobId = req.query.job;
+
+  if (!placeId || !jobId) {
+    return res.status(400).send("Missing placeId or jobId");
+  }
+
+  const robloxUri = `roblox://experiences/start?placeId=${placeId}&gameId=${jobId}`;
+  const fallbackHTML = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Join Roblox Game</title>
+      <style>
+        body { font-family: sans-serif; background: #111; color: #fff; padding: 40px; text-align: center; }
+        a { color: #88f; font-size: 18px; text-decoration: underline; }
+      </style>
+    </head>
+    <body>
+      <h1>🔗 Join Roblox Session</h1>
+      <p>If you are not redirected, click the link below to open Roblox manually:</p>
+      <a href="${robloxUri}">Click here to join the game</a>
+    </body>
+    </html>
+  `;
+  res.set("Content-Type", "text/html");
+  res.send(fallbackHTML);
+});
+
+// === Watchdog ===
 setInterval(() => {
   const now = Date.now();
-  sessions.forEach((s, u) => {
-    const seen = lastSeen.get(u) || 0;
 
-    if (!s.warned && now > s.endTime) {
+  for (const [username, s] of sessions.entries()) {
+    const last = lastSeen.get(username) || 0;
+
+    // Notify end
+    if (now > s.endTime && !s.warned) {
       fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
-        method:"POST",
-        headers:{"Content-Type":"application/json",Authorization:`Bot ${BOT_TOKEN}`},
-        body:JSON.stringify({ content:`⏳ ${u}'s joki ended.` })
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bot ${BOT_TOKEN}`
+        },
+        body: JSON.stringify({ content: `⏳ ${username}'s joki ended.` })
+      }).then(() => {
+        s.warned = true;
       });
-      s.warned = true;
     }
 
-    if (!s.offline && now - seen > 180000) {
+    // Detect offline
+    if (!s.offline && now - last >= 10 * 60 * 1000) {
       fetch(`https://discord.com/api/v10/channels/${s.channel}/messages`, {
-        method:"POST",
-        headers:{"Content-Type":"application/json",Authorization:`Bot ${BOT_TOKEN}`},
-        body:JSON.stringify({ content:`🔴 @everyone — **${u} is OFFLINE.** No heartbeat for 3 minutes.` })
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bot ${BOT_TOKEN}`
+        },
+        body: JSON.stringify({
+          content: `🔴 @everyone — **${username} is OFFLINE.** No heartbeat for 10 minutes.`
+        })
+      }).then(() => {
+        s.offline = true;
       });
-      s.offline = true;
     }
-  });
+
+    // Auto clean
+    if (now > s.endTime + 300000) {
+      sessions.delete(username);
+      lastSeen.delete(username);
+    }
+  }
 }, 60000);
 
-// Launch proxy + tunnel
+// === Start Server + Tunnel ===
 app.listen(PORT, () => {
   console.log(`✅ Proxy live on port ${PORT}`);
-  const tun = spawn("cloudflared", ["tunnel", "--url", `http://localhost:${PORT}`, "--loglevel", "info"]);
-  const procLine = m => {
-    const l = m.toString();
-    if (l.includes("trycloudflare.com")) console.log("🌐 Tunnel URL:", l.trim());
-  };
-  tun.stdout.on("data", procLine);
-  tun.stderr.on("data", procLine);
+
+  const tunnel = spawn("cloudflared", [
+    "tunnel",
+    "--url", `http://localhost:${PORT}`,
+    "--loglevel", "error"
+  ]);
+
+  tunnel.stdout.on("data", (data) => {
+    const output = data.toString();
+    if (output.includes("trycloudflare.com")) {
+      console.log(`🌐 Cloudflare URL: ${output.trim()}`);
+    }
+  });
+
+  tunnel.stderr.on("data", (err) => {
+    const msg = err.toString();
+    if (!msg.includes("refreshing dns")) {
+      console.error("⚠️ Cloudflared:", msg.trim());
+    }
+  });
 });
